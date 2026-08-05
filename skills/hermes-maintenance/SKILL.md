@@ -1,7 +1,7 @@
 ---
 name: hermes-maintenance
 description: Maintain native or Docker Hermes installs with per-profile Doctor, database integrity, config, gateway, session, cron, memory and log checks.
-version: 1.1.0
+version: 1.1.1
 author: Hermes Maintenance Contributors
 license: MIT
 platforms: [macos, linux]
@@ -361,7 +361,7 @@ Do not schedule the runner with unconditional `--apply --force`. Quarterly backu
 
 A script-only cron can run read-only segments. Mutating segments stay explicit unless the operator has reviewed and accepted the exact maintenance policy.
 
-The included native cron wrapper is that explicit policy boundary. Scheduling it runs exactly one due weekly or monthly segment with `--apply`. It never enables quarterly work:
+The included native cron wrapper, [`scripts/hermes-maintenance-cron.py`](scripts/hermes-maintenance-cron.py), is that explicit policy boundary. Scheduling it runs exactly one due weekly or monthly segment with `--apply`. It never enables quarterly work:
 
 ```bash
 CRON_SCRIPT="$HOME/.hermes/skills/hermes-maintenance/scripts/hermes-maintenance-cron.py"
