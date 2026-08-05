@@ -57,6 +57,13 @@ The included native cron wrapper runs exactly one due weekly or monthly segment 
 python3 "$HOME/.hermes/skills/hermes-maintenance/scripts/hermes-maintenance-cron.py"
 ```
 
+Hermes cron only accepts real files under `~/.hermes/scripts`; absolute skill paths and external symlinks are rejected. Copy the published shim into that directory, then schedule its filename:
+
+```bash
+cp "$HOME/.hermes/skills/hermes-maintenance/scripts/hermes-maintenance-cron-shim.py" \
+  "$HOME/.hermes/scripts/hermes-maintenance-skill-cron.py"
+```
+
 ## Privacy
 
 The repository contains no environment exports, credentials, chat/session data, databases, private profile names or machine-specific paths. Runtime audits report only metadata and counts.

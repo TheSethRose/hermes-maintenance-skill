@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 SCRIPT = Path(__file__).parents[1] / "skills" / "hermes-maintenance" / "scripts" / "hermes-maintenance.py"
 CRON_SCRIPT = Path(__file__).parents[1] / "skills" / "hermes-maintenance" / "scripts" / "hermes-maintenance-cron.py"
+CRON_SHIM = Path(__file__).parents[1] / "skills" / "hermes-maintenance" / "scripts" / "hermes-maintenance-cron-shim.py"
 SPEC = importlib.util.spec_from_file_location("hermes_maintenance", SCRIPT)
 assert SPEC and SPEC.loader
 module = importlib.util.module_from_spec(SPEC)
@@ -265,6 +266,17 @@ class MaintenanceTests(unittest.TestCase):
             command,
             [sys.executable, str(runner), "--mode", "native", "--next", "--apply"],
         )
+
+    def test_cron_shim_targets_installed_published_wrapper(self):
+        self.assertTrue(CRON_SHIM.exists())
+        spec = importlib.util.spec_from_file_location("hermes_maintenance_cron_shim", CRON_SHIM)
+        assert spec and spec.loader
+        shim_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(shim_module)
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            expected = home / "skills" / "hermes-maintenance" / "scripts" / "hermes-maintenance-cron.py"
+            self.assertEqual(shim_module.wrapper_path(home), expected)
 
     def test_mutating_segment_requires_apply(self):
         temp, root, _ = self.fixture()

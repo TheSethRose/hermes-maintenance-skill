@@ -1,7 +1,7 @@
 ---
 name: hermes-maintenance
 description: Maintain native or Docker Hermes installs with per-profile Doctor, database integrity, config, gateway, session, cron, memory and log checks.
-version: 1.1.1
+version: 1.1.2
 author: Hermes Maintenance Contributors
 license: MIT
 platforms: [macos, linux]
@@ -369,6 +369,16 @@ python3 "$CRON_SCRIPT"
 ```
 
 For Docker, update the image from the host. The `hermes-update` segment reports `not_applicable` instead of modifying a running container.
+
+Hermes cron requires a real script file under `~/.hermes/scripts`; it rejects absolute skill paths and symlinks that resolve outside that directory. Copy the published containment shim there after reviewing it:
+
+```bash
+SHIM_SOURCE="$HOME/.hermes/skills/hermes-maintenance/scripts/hermes-maintenance-cron-shim.py"
+SHIM="$HOME/.hermes/scripts/hermes-maintenance-skill-cron.py"
+test ! -e "$SHIM" && cp "$SHIM_SOURCE" "$SHIM"
+```
+
+The shim is [`scripts/hermes-maintenance-cron-shim.py`](scripts/hermes-maintenance-cron-shim.py). Schedule `hermes-maintenance-skill-cron.py`; it contains no maintenance logic and always loads the installed published wrapper.
 
 ## Privacy and publishing rules
 
