@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import io
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -12,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 SCRIPT = Path(__file__).parents[1] / "skills" / "hermes-maintenance" / "scripts" / "hermes-maintenance.py"
+CRON_SCRIPT = Path(__file__).parents[1] / "skills" / "hermes-maintenance" / "scripts" / "hermes-maintenance-cron.py"
 SPEC = importlib.util.spec_from_file_location("hermes_maintenance", SCRIPT)
 assert SPEC and SPEC.loader
 module = importlib.util.module_from_spec(SPEC)
@@ -160,6 +162,109 @@ class MaintenanceTests(unittest.TestCase):
         self.assertFalse(any(name.endswith("prefill.json") for name in names))
         self.assertFalse(any(name.endswith(".env") for name in names))
         self.assertFalse(any(name.endswith("state.db") for name in names))
+
+    def test_hermes_update_segment_is_weekly_mutating_and_native_only(self):
+        temp, root, _ = self.fixture()
+        self.addCleanup(temp.cleanup)
+        maintenance = module.Maintenance(args(root))
+        segment = next(s for s in module.build_segments(maintenance) if s.name == "hermes-update")
+        self.assertEqual(segment.bucket, "weekly")
+        self.assertTrue(segment.mutating)
+        with patch.object(maintenance, "run_command", return_value={"code": 0}) as run:
+            self.assertEqual(maintenance.hermes_update(), [{"code": 0}])
+        self.assertEqual(run.call_args.args[0], ["hermes", "update"])
+
+        docker = module.Maintenance(args(root, mode="docker"))
+        docker.run_id = "test"
+        with patch.object(docker, "run_command") as docker_run:
+            result = docker.hermes_update()[0]
+        docker_run.assert_not_called()
+        self.assertEqual(result["code"], 0)
+        self.assertIn("not_applicable", result["stdout_tail"])
+
+    def test_curator_status_segment_is_weekly_and_read_only(self):
+        temp, root, _ = self.fixture()
+        self.addCleanup(temp.cleanup)
+        maintenance = module.Maintenance(args(root))
+        segment = next(s for s in module.build_segments(maintenance) if s.name == "curator-status")
+        self.assertEqual(segment.bucket, "weekly")
+        self.assertFalse(segment.mutating)
+        with patch.object(maintenance, "run_command", return_value={"code": 0}) as run:
+            self.assertEqual(maintenance.curator_status(), [{"code": 0}])
+        self.assertEqual(run.call_args.args[0], ["hermes", "curator", "status"])
+
+    def test_auth_status_segment_is_quarterly_gated_for_every_profile(self):
+        temp, root, _ = self.fixture()
+        self.addCleanup(temp.cleanup)
+        maintenance = module.Maintenance(args(root))
+        segment = next(s for s in module.build_segments(maintenance) if s.name == "auth-status")
+        self.assertEqual(segment.bucket, "quarterly")
+        self.assertFalse(segment.mutating)
+        self.assertTrue(segment.quarterly_gate)
+        with patch.object(maintenance, "run_command", side_effect=lambda command, *unused: {"code": 0, "cmd": command}) as run:
+            results = maintenance.auth_status()
+        self.assertEqual(len(results), 2)
+        self.assertEqual(run.call_args_list[0].args[0], ["hermes", "auth", "list"])
+        self.assertEqual(run.call_args_list[1].args[0], ["hermes", "-p", "example-agent", "auth", "list"])
+
+    def test_auth_status_suppresses_account_and_fingerprint_output(self):
+        temp, root, _ = self.fixture()
+        self.addCleanup(temp.cleanup)
+        maintenance = module.Maintenance(args(root))
+        maintenance.run_id = "test"
+        private_output = "account=person@example.test fingerprint=synthetic-fingerprint"
+        completed = subprocess.CompletedProcess(["hermes", "auth", "list"], 0, private_output, "")
+        with patch.object(module.subprocess, "run", return_value=completed), redirect_stdout(io.StringIO()):
+            results = maintenance.auth_status()
+        persisted = maintenance.log_file.read_text()
+        self.assertTrue(all(result["stdout_tail"] == "[suppressed]" for result in results))
+        self.assertNotIn("person@example.test", persisted)
+        self.assertNotIn("synthetic-fingerprint", persisted)
+
+    def test_completed_run_is_closed_when_no_segments_are_pending(self):
+        temp, root, _ = self.fixture()
+        self.addCleanup(temp.cleanup)
+        state_dir = root / "maintenance-test"
+        state_dir.mkdir()
+        maintenance = module.Maintenance(args(root))
+        now = module.now_iso()
+        segments = module.build_segments(maintenance)
+        state = {
+            "created_at": now,
+            "last_run": {segment.name: now for segment in segments},
+            "runs": {"active": {"started_at": now, "segments": {}}},
+            "active_run_id": "active",
+        }
+        maintenance.save_state(state)
+        argv = [
+            "hermes-maintenance.py",
+            "--mode", "native",
+            "--home", str(root),
+            "--state-dir", str(state_dir),
+            "--next",
+        ]
+        with patch.object(sys, "argv", argv), redirect_stdout(io.StringIO()):
+            self.assertEqual(module.main(), 0)
+        saved = module.Maintenance(args(root)).load_state()
+        self.assertIsNone(saved["active_run_id"])
+        self.assertIn("completed_at", saved["runs"]["active"])
+
+    def test_cron_wrapper_runs_published_native_runner_with_apply(self):
+        self.assertTrue(CRON_SCRIPT.exists())
+        spec = importlib.util.spec_from_file_location("hermes_maintenance_cron", CRON_SCRIPT)
+        assert spec and spec.loader
+        cron_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cron_module)
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            runner = home / "skills" / "hermes-maintenance" / "scripts" / "hermes-maintenance.py"
+            runner.parent.mkdir(parents=True)
+            runner.write_text("# synthetic runner\n")
+            command = cron_module.build_command(home)
+        self.assertEqual(
+            command,
+            [sys.executable, str(runner), "--mode", "native", "--next", "--apply"],
+        )
 
     def test_mutating_segment_requires_apply(self):
         temp, root, _ = self.fixture()

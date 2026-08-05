@@ -5,8 +5,10 @@ A portable Hermes Agent skill for evidence-driven maintenance of native and mult
 It covers:
 
 - per-profile configuration migration and validation
+- native Hermes updates without modifying Docker images in place
 - per-profile Doctor runs
 - gateway and Docker runtime health
+- Curator status and per-profile authentication checks with command output suppressed
 - session statistics, retention and SQLite/FTS integrity
 - built-in memory pressure
 - cron error-state review
@@ -47,7 +49,13 @@ python3 "$SCRIPT" --mode native --segment doctor-all
 python3 "$SCRIPT" --mode docker --container hermes --segment session-integrity
 ```
 
-Mutating segments require `--apply`. Backups additionally require `--include-quarterly`. `--force` bypasses cadence only; it never bypasses either safety gate.
+Mutating segments require `--apply`. Every quarterly segment additionally requires `--include-quarterly`. `--force` bypasses cadence only; it never bypasses either safety gate.
+
+The included native cron wrapper runs exactly one due weekly or monthly segment and passes the explicit `--apply` policy. It never enables quarterly work:
+
+```bash
+python3 "$HOME/.hermes/skills/hermes-maintenance/scripts/hermes-maintenance-cron.py"
+```
 
 ## Privacy
 

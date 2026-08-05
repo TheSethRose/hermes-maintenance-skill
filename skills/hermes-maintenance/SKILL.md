@@ -1,7 +1,7 @@
 ---
 name: hermes-maintenance
 description: Maintain native or Docker Hermes installs with per-profile Doctor, database integrity, config, gateway, session, cron, memory and log checks.
-version: 1.0.1
+version: 1.1.0
 author: Hermes Maintenance Contributors
 license: MIT
 platforms: [macos, linux]
@@ -38,11 +38,13 @@ What it does:
 
 - finds profiles from their `config.yaml` files
 - supports native and Docker execution
+- updates native Hermes installations without changing Docker images in place
+- checks Curator status and per-profile authentication state
 - runs one segment at a time
 - keeps compact state and JSONL logs, with one JSON record per line
 - redacts likely credentials from captured output
 - requires `--apply` for mutating segments
-- requires `--include-quarterly` for backups and broad log review
+- requires `--include-quarterly` for every quarterly segment
 - uses the Docker `hermes` shim rather than calling the Python virtual environment (`venv`) binary as root
 
 The runner never edits configuration values directly. The agent must inspect the evidence and make repairs deliberately.
@@ -122,10 +124,12 @@ If discovery is ambiguous, stop and ask for the Hermes data root or container na
 
 ### Weekly
 
+- `hermes-update`: update a native Hermes installation; requires `--apply`; Docker reports `not_applicable` so the image can be updated from the host
 - `inventory`: version, profiles, config versions and Docker runtime when applicable
 - `config-migrate`: apply supported config migrations to every profile found; requires `--apply`
 - `config-check`: validate every profile config
 - `gateway-status`: inspect every profile gateway
+- `curator-status`: inspect Hermes Curator status
 - `docker-runtime`: container state, restart count, gateway worker count and `/health` when exposed
 
 ### Monthly
@@ -141,8 +145,9 @@ If discovery is ambiguous, stop and ask for the Hermes data root or container na
 
 ### Quarterly-gated
 
+- `auth-status`: check authentication state separately for every profile while suppressing account and credential output
 - `gateway-log-scan`: count actionable recent warning patterns without reproducing sensitive log lines
-- `profile-backups`: create allowlisted identity/config backups; requires `--apply --include-quarterly`
+- `profile-backups`: create allowlisted profile recovery backups; requires `--apply --include-quarterly`
 
 Backups include only selected config, built-in memory, skills, cron definitions and scripts. They exclude credentials, identity/instruction/prefill files, auth state, session databases, logs, caches, dependency trees and runtime state. Agent-control files need deliberate manual handling and are never copied by the community runner.
 
@@ -355,6 +360,15 @@ The safest automated pattern is an agent-driven cron that loads this skill, runs
 Do not schedule the runner with unconditional `--apply --force`. Quarterly backups should never be enabled silently.
 
 A script-only cron can run read-only segments. Mutating segments stay explicit unless the operator has reviewed and accepted the exact maintenance policy.
+
+The included native cron wrapper is that explicit policy boundary. Scheduling it runs exactly one due weekly or monthly segment with `--apply`. It never enables quarterly work:
+
+```bash
+CRON_SCRIPT="$HOME/.hermes/skills/hermes-maintenance/scripts/hermes-maintenance-cron.py"
+python3 "$CRON_SCRIPT"
+```
+
+For Docker, update the image from the host. The `hermes-update` segment reports `not_applicable` instead of modifying a running container.
 
 ## Privacy and publishing rules
 

@@ -170,7 +170,7 @@ class Maintenance:
             return ["docker", "exec", self.container, *inner]
         return inner
 
-    def run_command(self, cmd: list[str], label: str, segment: str, timeout: int = 300) -> dict[str, Any]:
+    def run_command(self, cmd: list[str], label: str, segment: str, timeout: int = 300, suppress_output: bool = False) -> dict[str, Any]:
         started = time.time()
         print(f"running: {label}", flush=True)
         try:
@@ -187,8 +187,8 @@ class Maintenance:
                 "cmd": cmd,
                 "code": proc.returncode,
                 "seconds": round(time.time() - started, 1),
-                "stdout_tail": redact(proc.stdout[-TAIL_CHARS:]),
-                "stderr_tail": redact(proc.stderr[-TAIL_CHARS:]),
+                "stdout_tail": "[suppressed]" if suppress_output else redact(proc.stdout[-TAIL_CHARS:]),
+                "stderr_tail": "[suppressed]" if suppress_output and proc.stderr else redact(proc.stderr[-TAIL_CHARS:]),
             }
         except subprocess.TimeoutExpired as exc:
             result = {
@@ -196,8 +196,8 @@ class Maintenance:
                 "cmd": cmd,
                 "code": 124,
                 "seconds": round(time.time() - started, 1),
-                "stdout_tail": redact(exc.stdout[-TAIL_CHARS:] if isinstance(exc.stdout, str) else ""),
-                "stderr_tail": redact(exc.stderr[-TAIL_CHARS:] if isinstance(exc.stderr, str) else f"timeout after {timeout}s"),
+                "stdout_tail": "[suppressed]" if suppress_output else redact(exc.stdout[-TAIL_CHARS:] if isinstance(exc.stdout, str) else ""),
+                "stderr_tail": "[suppressed]" if suppress_output else redact(exc.stderr[-TAIL_CHARS:] if isinstance(exc.stderr, str) else f"timeout after {timeout}s"),
             }
         except OSError as exc:  # pragma: no cover - platform-specific execution failures
             result = {
@@ -206,7 +206,7 @@ class Maintenance:
                 "code": 1,
                 "seconds": round(time.time() - started, 1),
                 "stdout_tail": "",
-                "stderr_tail": redact(repr(exc)),
+                "stderr_tail": "[suppressed]" if suppress_output else redact(repr(exc)),
             }
         self.append_log(segment, result)
         status = "ok" if result["code"] == 0 else f"error {result['code']}"
@@ -291,6 +291,11 @@ class Maintenance:
         self.lock_file.unlink(missing_ok=True)
 
     # Segment handlers
+    def hermes_update(self) -> list[dict[str, Any]]:
+        if self.mode == "docker":
+            return [self.result("Hermes update", "hermes-update", "not_applicable: update the container image on the host")]
+        return [self.run_command(self.hermes_cmd("default", "update"), "Hermes update", "hermes-update", 900)]
+
     def inventory(self) -> list[dict[str, Any]]:
         results = [self.run_command(self.hermes_cmd("default", "--version"), "Hermes version", "inventory", 120)]
         results.append(self.run_command(self.hermes_cmd("default", "profile", "list"), "profile inventory", "inventory", 180))
@@ -313,11 +318,17 @@ class Maintenance:
     def gateway_status(self) -> list[dict[str, Any]]:
         return [self.run_command(self.hermes_cmd(p, "gateway", "status"), f"gateway status {p}", "gateway-status", 180) for p in self.profiles()]
 
+    def curator_status(self) -> list[dict[str, Any]]:
+        return [self.run_command(self.hermes_cmd("default", "curator", "status"), "curator status", "curator-status", 180)]
+
     def doctor_all(self) -> list[dict[str, Any]]:
         return [self.run_command(self.hermes_cmd(p, "doctor"), f"doctor {p}", "doctor-all", 900) for p in self.profiles()]
 
     def skills_check(self) -> list[dict[str, Any]]:
         return [self.run_command(self.hermes_cmd("default", "skills", "check"), "skills check", "skills-check", 300)]
+
+    def auth_status(self) -> list[dict[str, Any]]:
+        return [self.run_command(self.hermes_cmd(p, "auth", "list"), f"auth status {p}", "auth-status", 180, True) for p in self.profiles()]
 
     def session_stats(self) -> list[dict[str, Any]]:
         return [self.run_command(self.hermes_cmd(p, "sessions", "stats"), f"sessions stats {p}", "session-stats", 300) for p in self.profiles()]
@@ -506,10 +517,12 @@ class Maintenance:
 
 def build_segments(m: Maintenance) -> list[Segment]:
     return [
+        Segment("hermes-update", "weekly", "update a native Hermes installation", True, False, m.hermes_update),
         Segment("inventory", "weekly", "version, profiles and runtime inventory", False, False, m.inventory),
         Segment("config-migrate", "weekly", "migrate every discovered profile config", True, False, m.config_migrate),
         Segment("config-check", "weekly", "validate every discovered profile config", False, False, m.config_check),
         Segment("gateway-status", "weekly", "check every profile gateway", False, False, m.gateway_status),
+        Segment("curator-status", "weekly", "check Hermes Curator status", False, False, m.curator_status),
         Segment("doctor-all", "monthly", "run Doctor independently for every profile", False, False, m.doctor_all),
         Segment("skills-check", "monthly", "check installed skill updates", False, False, m.skills_check),
         Segment("session-stats", "monthly", "collect session statistics for every profile", False, False, m.session_stats),
@@ -518,9 +531,10 @@ def build_segments(m: Maintenance) -> list[Segment]:
         Segment("memory-pressure", "monthly", "report built-in memory file sizes", False, False, m.memory_pressure),
         Segment("config-hygiene", "monthly", "detect token collisions and stale env/config markers", False, False, m.config_hygiene),
         Segment("cron-health", "monthly", "report cron job counts and error states", False, False, m.cron_health),
+        Segment("auth-status", "quarterly", "check authentication state for every profile without storing command output", False, True, m.auth_status),
         Segment("gateway-log-scan", "quarterly", "count recent actionable gateway log patterns", False, True, m.gateway_log_scan),
         Segment("docker-runtime", "weekly", "inspect Docker health when applicable", False, False, m.docker_runtime),
-        Segment("profile-backups", "quarterly", "create allowlisted identity/config backups", True, True, m.profile_backups),
+        Segment("profile-backups", "quarterly", "create allowlisted profile recovery backups", True, True, m.profile_backups),
     ]
 
 
@@ -653,6 +667,12 @@ def main() -> int:
         return run_segment(m, by_name[args.segment], state)
     if args.next or len(sys.argv) == 1:
         if not pending:
+            active_id = state.get("active_run_id")
+            if active_id:
+                active = state.get("runs", {}).get(active_id, {})
+                active["completed_at"] = active.get("completed_at") or now_iso()
+                state["active_run_id"] = None
+                m.save_state(state)
             if args.next:
                 print("HERMES_MAINTENANCE_COMPLETE")
             return 0
